@@ -17,14 +17,14 @@ rule all:
 
 rule download_reads:
     params:
-        sample=wildcards.sample
+        sample=lambda wildcards : wildcards.sample
     output:
         "{dataset}/{sample}_1.fastq.gz",
         "{dataset}/{sample}_2.fastq.gz"
     conda:
         "envs/sra-tools.yaml"
     shell:
-        "fastq-dump --split-files --origfmt --gzip {}"
+        "fastq-dump --split-files --origfmt --gzip --outdir {config[dataset]} {params.sample}"
 
 rule unzip_reads:
     input:
