@@ -1,0 +1,6 @@
+channels:
+  - bioconda
+  - conda-forge
+dependencies: 
+  - pysam =0.16.0.1
+  - python =3.6

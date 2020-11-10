@@ -1,0 +1,20 @@
+{
+    "reference" : "./references/hg38.fa",
+    "genomesize" : "hs",
+    "notebook_mem" : 8000,
+    "sort_mem" : 8000,
+    "sort_cpus" : 8,
+    "trim_mem" : 8000,
+    "trim_cpus" : 8,
+    "align_mem" : 24000,
+    "align_cpus" : 16,
+    "chrom_sizes" : "./references/hg38.genome",
+    "adapter_sequences":{
+        "nextera-transposase-adapters" : {
+            "forward" : "TCGTCGGCAGCGTCAGATGTGTATAAGAGACAG",
+            "backward" : "GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAG"
+        }
+    },
+    "fragment_peakcall_length":150,
+    "min_fragments":5000
+}

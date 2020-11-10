@@ -1,0 +1,246 @@
+
+import os
+import sys
+import re
+from collections import defaultdict
+
+configfile: "./config/config.json"
+
+samples = config['samples'].split(',')
+
+rule all:
+    input:
+        "{dataset}/fragments.sorted.bed".format(dataset = config['dataset']),
+        "{dataset}/tadcounts.tsv".format(dataset = config['dataset']),
+        "{dataset}/peakcounts.h5ad".format(dataset = config['dataset']),
+        dir("{dataset}/qc".format(dataset=config['dataset']))
+
+rule download_reads:
+    params:
+        sample=wildcards.sample
+    output:
+        "{dataset}/{sample}_1.fastq.gz",
+        "{dataset}/{sample}_2.fastq.gz"
+    conda:
+        "envs/sra-tools.yaml"
+    shell:
+        "fastq-dump --split-files --origfmt --gzip {}"
+
+rule unzip_reads:
+    input:
+        "{dataset}/{sample}_{id}.fastq.gz"
+    output:
+        "{dataset}/{sample}_{id}.fastq"
+    shell:
+        "gzip -d {input}"
+
+rule trim_reads:
+    input:
+        reads1="{dataset}/{sample}_1.fastq",
+        reads2="{dataset}/{sample}_2.fastq"
+    output:
+        out1=temp("{dataset}/{sample}_1.trimmed.fastq"),
+        out2=temp("{dataset}/{sample}_2.trimmed.fastq")
+    params:
+        fwd_adapter=config['adapter_sequences'][config['adapters']]['forward'],
+        rev_adapter=config['adapter_sequences'][config['adapters']]['backward']
+    threads: 8
+    resources:
+        cpus=config['trim_cpus'], mem_mb=config['trim_mem']
+    conda:
+        "envs/cutadapt.yaml"
+    shell:
+        "cutadapt --cores {resources.cpus} -a {params.fwd_adapter} -A {params.rev_adapter} -o {output.out1} -p {output.out2} {input.reads1} {input.reads2}"
+
+rule get_quality:
+    input:
+        expand("{dataset}/{sample}_{id}.trimmed.fastq", dataset = config['dataset'], sample = samples, id = ['1','2'])
+    output:
+        dir("{dataset}/qc")
+    conda:
+        "envs/fastqc.yaml"
+    shell:
+        "fastqc {input} -o {output}"
+
+rule map_reads:
+    input:
+        fasta = config["reference"],
+        fastq1 = "{dataset}/{sample}_1.trimmed.fastq",
+        fastq2 = "{dataset}/{sample}_2.trimmed.fastq"
+    output:
+        bam = temp("{dataset}/{sample}.sortedByPos.bam")
+    threads:
+        8
+    resources:
+        cpus=config['align_cpus'], mem_mb=config['align_mem']
+    conda:
+        "envs/minimap.yaml"
+    shell:
+        "minimap2 -ax sr -t {threads} {input.fasta} {input.fastq1} {input.fastq2} "
+        "| samtools view --threads {threads} -b "
+        "| samtools sort --threads {threads} -o {output.bam}"
+
+rule generate_fragments:
+    input:
+        bam = "{dataset}/{sample}.sortedByPos.bam"
+    output:
+        fragments = temp("{dataset}/{sample}_fragments.sorted.bed")
+    conda:
+        "envs/fragment_generation.yaml"
+    shell:
+        "python workflow/scripts/scATAC_FragmentGenerate.py -b {input.bam} --cell_barcode CB > {output.fragments}"
+
+'''rule sort_fragments:
+    input:
+        "{dataset}/{sample}_fragments.bed"
+    output:
+        temp("{dataset}/{sample}_fragments.sorted.bed")
+    threads: 8
+    resources: cpus=config["sort_cpus"], mem_mb=config["sort_mem"], time_min=300
+    shell:
+        "sort -k1,1 -k2,2n {input} > {output}"'''
+
+rule cell_level_deduplicate:
+    input:
+        "{dataset}/{sample}_fragments.sorted.bed"
+    output:
+        temp("{dataset}/{sample}_fragments.sorted.dedup.bed")
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        "python workflow/scripts/fast_bulk_deduplicate.py {input} --mark | "
+        "awk '{{OFS=\"\t\"}} {{print $1,$2,$3,$4\":{wildcards.sample}}}' > {output}"
+
+rule get_short_fragments:
+    input:
+        "{dataset}/{sample}_fragments.sorted.dedup.bed"
+    output:
+        temp("{dataset}/{sample}_fragments.sorted.dedup.short.bed")
+    shell:
+        "awk '$3-$2<={config[fragment_peakcall_length]}' {input} > {output}"
+
+rule call_peaks:
+    input:
+        "{dataset}/{sample}_fragments.sorted.dedup.short.bed"
+    output:
+        temp("{dataset}/{sample}_peaks.bed")
+    resources: cpus=1, mem_mb=8000, time_min=180
+    conda: "envs/macs2.yaml"
+    shell:
+        "macs2 callpeak -t \"{input}\" -f BEDPE -g {config[genomesize]} --keep-dup all -B -q 0.05 --nomodel --extsize=50 --SPMR -n {wildcards.sample} --outdir \"{wildcards.dataset}/{wildcards.sample}_peak_calling/\" && "
+        "cat {wildcards.dataset}/{wildcards.sample}_peak_calling/{wildcards.sample}_peaks.narrowPeak | cut -f1-3 > {output} && "
+        "rm -rf -r {wildcards.dataset}/{wildcards.sample}_peak_calling"
+
+rule merge_peaks:
+    input:
+        peak_files= lambda wildcards: expand("{dataset}/{sample}_peaks.bed", dataset = wildcards.dataset, 
+            sample=samples)
+    output:
+        "{dataset}/peaks.merged.bed"
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        "cat {input} | sort -k1,1 -k2,2n | bedtools merge -i - > {output}"
+
+rule join_tad_data:
+    input:
+        "{dataset}/peaks.merged.bed"
+    output:
+        temp("{dataset}/peaks.temp.bed")
+    params:
+        tads="./resources/TADs.bed"
+    conda: "envs/bedtools.yaml"
+    shell:
+        "bedtools intersect -a {input} -b {params.tads} -loj -f 0.5 | awk '{{OFS=\"\t\"}} {{print $1,$2,$3,$7}}' > {output}"
+
+msg_str = '''For this step to complete properly, install/load R, then run:
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("ChIPseeker")
+BiocManager::install("TxDb.Hsapiens.UCSC.hg38.knownGene")'''
+
+rule annotate_peaks:
+    input:
+        "{dataset}/peaks.temp.bed"
+    output:
+        "{dataset}/peak_annotations.tsv"
+    envmodules:
+        "R"
+    message: msg_str
+    shell:
+        "Rscript ./workflow/scripts/annotate.r {input} {output}"
+
+rule intersect_peaks:
+    input:
+        fragments="{dataset}/{sample}_fragments.sorted.dedup.short.bed",
+        peaks="{dataset}/peaks.temp.bed"
+    output:
+        temp("{dataset}/{sample}_fragments.sorted.dedup.short.intersected.bed")
+    conda: "envs/bedtools.yaml"
+    shell:
+        "paste <(bedtools intersect -a {input.fragments} -b {input.peaks} -loj -sorted) "
+        "<(bedtools intersect -a {input.fragments} -b resources/TADs.bed -loj -sorted | cut -f8) | "
+        "awk '{{OFS=\"\t\"}} {{ print $1,$2,$3,$4,$5,$6,$7,($8==\".\") ? $9 : $8}}' > {output}"
+
+rule count_barcodes:
+    input:
+        "{dataset}/{sample}_fragments.sorted.dedup.short.intersected.bed"
+    output:
+        temp("{dataset}/{sample}_barcodes.txt")
+    threads: 8
+    resources: 
+        cpus=config["sort_cpus"], mem_mb=config["sort_mem"], time_min=300
+    conda: "envs/bedtools.yaml"
+    shell:
+        "cat {input} | cut -f4,5 | "
+        "awk '{{OFS=\"\t\"}} {{ print $1,($2==\".\") ? \"background\" : \"peak\"}}' | "
+        "sort -k1,1 -k2,2 | uniq -c | awk '{{OFS=\"\t\"}} {{print $1,$2,$3}}' | bedtools groupby -g 2 -c 1,3 -o collapse | "
+        "tr \",\" \"\t\" | awk 'NF==5 && $3/($3+$2)>0.15 && ($2+$3)>={config[min_fragments]}' | cut -f1 > {output}"
+
+rule filter_cell_fragments:
+    input:
+        fragments="{dataset}/{sample}_fragments.sorted.dedup.short.intersected.bed",
+        barcodes="{dataset}/{sample}_barcodes.txt"
+    output:
+        temp("{dataset}/{sample}_fragments.sorted.dedup.short.intersected.filtered.bed")
+    conda:
+        "envs/bedtools.yaml"
+    shell:
+        "python workflow/scripts/filter_by_barcode.py {input.fragments} {input.barcodes} > {output}"
+
+rule merge_fragments:
+    input:
+        lambda wildcards: expand("{dataset}/{sample}_fragments.sorted.dedup.short.intersected.filtered.bed", 
+            dataset = wildcards.dataset,
+            sample = samples
+        )
+    output:
+        "{dataset}/fragments.sorted.bed"
+    shell:
+        "cat {input} > {output}"
+
+rule make_peak_count_matrix:
+    input:
+        fragments="{dataset}/fragments.sorted.bed"
+    output:
+        "{dataset}/peakcounts.h5ad"
+    conda: "envs/matrix.yaml"
+    resources: mem_mb=8000
+    shell:
+        "python workflow/scripts/make_andata.py -f {input.fragments} -o {output}"
+
+rule make_tad_count_table:
+    input:
+        "{dataset}/fragments.sorted.bed"
+    output: 
+        "{dataset}/tadcounts.tsv"
+    conda:
+        "envs/bedtools.yaml"
+    threads: 4
+    resources: 
+        cpus=config["sort_cpus"], mem_mb=config["sort_mem"], time_min=300
+    shell:
+        "cat {input} | cut -f4-8 | "
+        "awk '{{OFS=\"\t\"}} {{ print $1, ($2==\".\") ? \"background\" : \"peak\",$5}}' | sort -k1,1 -k2,2 -k3,3 | "
+        "bedtools groupby -g 1,2,3 -c 3 -o count > {output}"
