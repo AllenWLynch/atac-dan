@@ -60,7 +60,7 @@ rule get_quality:
     conda:
         "envs/fastqc.yaml"
     shell:
-        "fastqc {input} -o {wilcards.dataset}/qc"
+        "fastqc {input} -o {wildcards.dataset}/qc"
 
 rule map_reads:
     input:
