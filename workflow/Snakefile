@@ -50,7 +50,7 @@ rule trim_reads:
     conda:
         "envs/cutadapt.yaml"
     shell:
-        "cutadapt --cores {resources.cpus} -a {params.fwd_adapter} -A {params.rev_adapter} -o {output.out1} -p {output.out2} {input.reads1} {input.reads2}"
+        "cutadapt --cores {resources.cpus} -m 1 -a {params.fwd_adapter} -A {params.rev_adapter} -o {output.out1} -p {output.out2} {input.reads1} {input.reads2}"
 
 rule get_quality:
     input:
@@ -60,7 +60,7 @@ rule get_quality:
     conda:
         "envs/fastqc.yaml"
     shell:
-        "fastqc {input} -o {output}"
+        "fastqc {input} -o {wilcards.dataset}/qc"
 
 rule map_reads:
     input:
