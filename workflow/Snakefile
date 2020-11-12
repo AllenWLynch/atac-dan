@@ -13,7 +13,8 @@ rule all:
         "{dataset}/fragments.sorted.bed".format(dataset = config['dataset']),
         "{dataset}/tadcounts.tsv".format(dataset = config['dataset']),
         "{dataset}/peakcounts.h5ad".format(dataset = config['dataset']),
-        dir("{dataset}/qc".format(dataset=config['dataset']))
+        "{dataset}/peak_annotations.tsv".format(dataset = config['dataset'])
+        #dir("{dataset}/qc".format(dataset=config['dataset']))
 
 rule download_reads:
     params:
@@ -68,7 +69,7 @@ rule map_reads:
         fastq1 = "{dataset}/{sample}_1.trimmed.fastq",
         fastq2 = "{dataset}/{sample}_2.trimmed.fastq"
     output:
-        bam = temp("{dataset}/{sample}.sortedByPos.bam")
+        temp("{dataset}/{sample}.sam")
     threads:
         8
     resources:
@@ -76,13 +77,20 @@ rule map_reads:
     conda:
         "envs/minimap.yaml"
     shell:
-        "minimap2 -ax sr -t {threads} {input.fasta} {input.fastq1} {input.fastq2} "
-        "| samtools view --threads {threads} -b "
+        "minimap2 -ax sr -t {threads} {input.fasta} {input.fastq1} {input.fastq2} > {output}"
+
+rule sort_reads:
+    input:
+        "{dataset}/{sample}.sam"
+    output:
+        temp("{dataset}/{sample}.sorted.bam")
+    shell:
+        "samtools view --threads {threads} -b "
         "| samtools sort --threads {threads} -o {output.bam}"
 
 rule generate_fragments:
     input:
-        bam = "{dataset}/{sample}.sortedByPos.bam"
+        bam = "{dataset}/{sample}.sorted.bam"
     output:
         fragments = temp("{dataset}/{sample}_fragments.sorted.bed")
     conda:
@@ -90,7 +98,7 @@ rule generate_fragments:
     shell:
         "python workflow/scripts/scATAC_FragmentGenerate.py -b {input.bam} --cell_barcode CB > {output.fragments}"
 
-'''rule sort_fragments:
+rule sort_fragments:
     input:
         "{dataset}/{sample}_fragments.bed"
     output:
@@ -98,7 +106,7 @@ rule generate_fragments:
     threads: 8
     resources: cpus=config["sort_cpus"], mem_mb=config["sort_mem"], time_min=300
     shell:
-        "sort -k1,1 -k2,2n {input} > {output}"'''
+        "sort -k1,1 -k2,2n {input} > {output}"
 
 rule cell_level_deduplicate:
     input:
@@ -109,7 +117,7 @@ rule cell_level_deduplicate:
         "envs/bedtools.yaml"
     shell:
         "python workflow/scripts/fast_bulk_deduplicate.py {input} --mark | "
-        "awk '{{OFS=\"\t\"}} {{print $1,$2,$3,$4\":{wildcards.sample}}}' > {output}"
+        "awk '{{OFS=\"\t\"}} {{print $1,$2,$3,$4\":{wildcards.sample}\"}}' > {output}"
 
 rule get_short_fragments:
     input:
@@ -173,10 +181,10 @@ rule annotate_peaks:
 
 rule intersect_peaks:
     input:
-        fragments="{dataset}/{sample}_fragments.sorted.dedup.short.bed",
+        fragments="{dataset}/{sample}_fragments.sorted.dedup.bed",
         peaks="{dataset}/peaks.temp.bed"
     output:
-        temp("{dataset}/{sample}_fragments.sorted.dedup.short.intersected.bed")
+        temp("{dataset}/{sample}_fragments.sorted.dedup.intersected.bed")
     conda: "envs/bedtools.yaml"
     shell:
         "paste <(bedtools intersect -a {input.fragments} -b {input.peaks} -loj -sorted) "
@@ -185,7 +193,7 @@ rule intersect_peaks:
 
 rule count_barcodes:
     input:
-        "{dataset}/{sample}_fragments.sorted.dedup.short.intersected.bed"
+        "{dataset}/{sample}_fragments.sorted.dedup.intersected.bed"
     output:
         temp("{dataset}/{sample}_barcodes.txt")
     threads: 8
@@ -200,10 +208,10 @@ rule count_barcodes:
 
 rule filter_cell_fragments:
     input:
-        fragments="{dataset}/{sample}_fragments.sorted.dedup.short.intersected.bed",
+        fragments="{dataset}/{sample}_fragments.sorted.dedup.intersected.bed",
         barcodes="{dataset}/{sample}_barcodes.txt"
     output:
-        temp("{dataset}/{sample}_fragments.sorted.dedup.short.intersected.filtered.bed")
+        temp("{dataset}/{sample}_fragments.sorted.dedup.intersected.filtered.bed")
     conda:
         "envs/bedtools.yaml"
     shell:
@@ -211,7 +219,7 @@ rule filter_cell_fragments:
 
 rule merge_fragments:
     input:
-        lambda wildcards: expand("{dataset}/{sample}_fragments.sorted.dedup.short.intersected.filtered.bed", 
+        lambda wildcards: expand("{dataset}/{sample}_fragments.sorted.dedup.intersected.filtered.bed", 
             dataset = wildcards.dataset,
             sample = samples
         )
