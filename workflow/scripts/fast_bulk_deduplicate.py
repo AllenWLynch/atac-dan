@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     fragment_writer = FragmentWriter(args.mark)
 
-    for linenum, fragment in enumerate(args.input.readlines()):
+    for linenum, fragment in enumerate(args.input):
         
         try:
             (chrom,start,end,barcode) = fragment.strip().split('\t')[:4]
