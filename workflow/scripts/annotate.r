@@ -2,17 +2,25 @@
 
 args = commandArgs(trailingOnly=TRUE)
 
-if (length(args) == 2){
+if (length(args) == 3){
   bedfile <- args[1]
-  output <- args[2]
+  species <- args[2]
+  output <- args[3]
 } else {
-  stop("Requires [bedfile] [output]", call.=FALSE)
+  stop("Requires [bedfile] [species] [output]", call.=FALSE)
 }
 
 library(ChIPseeker)
-library(TxDb.Hsapiens.UCSC.hg38.knownGene)
 
-txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+if (reference == 'hg38'){
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  txdb = TxDb.Hsapiens.UCSC.hg38.knownGene
+} else if (reference == 'mm10'){
+  library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+  txdb = TxDb.Mmusculus.UCSC.mm10.knownGene
+} else {
+  stop("Species must be either hg38 or mm10", call.=False)
+}
 
 peaks <- readPeakFile(bedfile)
 
