@@ -158,7 +158,7 @@ rule join_tad_data:
     output:
         temp("{dataset}/peaks.temp.bed")
     params:
-        tads="./resources/{species}_TADs.bed".format(config['species'])
+        tads="./resources/{species}_TADs.bed".format(species=config['species'])
     conda: "envs/bedtools.yaml"
     shell:
         "bedtools intersect -a {input} -b {params.tads} -loj -f 0.5 | awk '{{OFS=\"\t\"}} {{print $1,$2,$3,$7}}' > {output}"
